@@ -146,8 +146,6 @@ function predictWebcam() {
     canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
 
     // Use squared distance to avoid Math.sqrt for better performance
-    const thresholdSq = 0.015; // Increased from 0.01 for better sensitivity
-
     try {
       const faceResult = faceLandmarker.detectForVideo(video, startTimeMs);
       const handResult = handLandmarker.detectForVideo(video, startTimeMs);
@@ -168,15 +166,41 @@ function predictWebcam() {
 
       if (faceResult.faceLandmarks && faceResult.faceLandmarks.length > 0) {
         const faceLandmarks = faceResult.faceLandmarks[0];
-        const mouthLandmark = faceLandmarks[13]; // Inner lower lip center
-        const mouthLeft = faceLandmarks[61]; // Mouth left corner
-        const mouthRight = faceLandmarks[291]; // Mouth right corner
-        const noseTip = faceLandmarks[1]; // Nose tip
+        // Landmarks:
+        // 0: Upper lip top center
+        // 13: Inner lower lip center
+        // 17: Lower lip bottom center
+        // 1: Nose tip
+        // 164: Philtrum (just below nose, above upper lip)
+        const mouthLandmark = faceLandmarks[13]; 
+        const mouthLeft = faceLandmarks[61]; 
+        const mouthRight = faceLandmarks[291]; 
+        const mouthTop = faceLandmarks[0]; 
+        const mouthBottom = faceLandmarks[17]; 
+        const noseTip = faceLandmarks[1]; 
+        const philtrum = faceLandmarks[164];
 
-        canvasCtx.fillStyle = '#00FF00';
-        canvasCtx.beginPath();
-        canvasCtx.arc(mouthLandmark.x * canvasElement.width, mouthLandmark.y * canvasElement.height, 5, 0, 2 * Math.PI);
-        canvasCtx.fill();
+        // Draw mouth target area (for debugging)
+        canvasCtx.strokeStyle = '#00FF00';
+        canvasCtx.lineWidth = 2;
+        const mouthWidth = Math.abs(mouthRight.x - mouthLeft.x);
+        const marginX = mouthWidth * 0.1; 
+        const minX = Math.min(mouthLeft.x, mouthRight.x) - marginX;
+        const maxX = Math.max(mouthLeft.x, mouthRight.x) + marginX;
+        
+        // Define a strict vertical range for the mouth: 
+        // starting from slightly above the upper lip (philtrum/2) 
+        // to slightly below the bottom lip.
+        const upperYBound = (philtrum.y + mouthTop.y) / 2;
+        const lowerYBound = mouthBottom.y + (mouthBottom.y - mouthTop.y) * 0.3;
+
+        // Draw the target box
+        canvasCtx.strokeRect(
+          minX * canvasElement.width,
+          upperYBound * canvasElement.height,
+          (maxX - minX) * canvasElement.width,
+          (lowerYBound - upperYBound) * canvasElement.height
+        );
 
         if (handResult.landmarks && handResult.landmarks.length > 0) {
           let closeToMouth = false;
@@ -189,20 +213,24 @@ function predictWebcam() {
               const dy = tip.y - mouthLandmark.y;
               const distSq = dx * dx + dy * dy;
 
-              if (distSq < thresholdSq) {
-                // REFINEMENT:
-                // 1. Hand must be below the nose tip (less restrictive than upper lip)
-                // 2. Hand must be closer to the mouth than to the nose
-                // 3. Hand must be horizontally within a relaxed mouth width margin
+              // Tighter distance threshold
+              if (distSq < 0.004) {
+                // 1. Strict horizontal alignment with the mouth
+                const withinX = tip.x >= minX && tip.x <= maxX;
+                
+                // 2. Strict vertical alignment: Must be BELOW the philtrum and ABOVE the chin area
+                const withinY = tip.y > upperYBound && tip.y < lowerYBound;
+
+                // 3. EXCLUSION: If the finger is closer to the nose tip than to the mouth, IGNORE it.
+                // This is crucial for nose-scratching cases.
                 const distToNoseSq = Math.pow(tip.x - noseTip.x, 2) + Math.pow(tip.y - noseTip.y, 2);
+                const closerToNoseThanMouth = distToNoseSq < distSq;
 
-                const mouthWidth = Math.abs(mouthRight.x - mouthLeft.x);
-                const horizontalMargin = mouthWidth * 0.8; // Relaxed margin
-                const minX = Math.min(mouthLeft.x, mouthRight.x) - horizontalMargin;
-                const maxX = Math.max(mouthLeft.x, mouthRight.x) + horizontalMargin;
-                const withinMouthWidth = tip.x >= minX && tip.x <= maxX;
+                // 4. DEPTH: Finger must be very close to the face surface (not just passing in front)
+                const dz = Math.abs(tip.z - mouthLandmark.z);
+                const depthMatch = dz < 0.035; 
 
-                if (tip.y > noseTip.y && distSq < distToNoseSq && withinMouthWidth) {
+                if (withinX && withinY && !closerToNoseThanMouth && depthMatch) {
                   closeToMouth = true;
                   break;
                 }
