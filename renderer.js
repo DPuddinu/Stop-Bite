@@ -18,13 +18,15 @@ let videoStream = null;
 let soundFiles = [];
 const audioPlayer = new Audio();
 let currentSoundIndex = 0;
-let currentAudio = null; // Still keep for SpeechSynthesis if needed
 
 let proximityStartTime = null;
-const PROXIMITY_REQUIRED_DURATION = 500; // 1 second
+let lastProximityTime = 0;
+const PROXIMITY_REQUIRED_DURATION = 400; // Sustained for 400ms
+const PROXIMITY_GRACE_PERIOD = 250; // Allow 250ms of flicker before resetting timer
 
 ipcRenderer.on('update-sounds', (event, files) => {
   soundFiles = files;
+  currentSoundIndex = 0; // Reset index to ensure sequential play from start
   console.log('Suoni caricati:', soundFiles);
 });
 
@@ -42,6 +44,7 @@ const scream = () => {
 
   if (soundFiles.length > 0) {
     const nextSound = soundFiles[currentSoundIndex];
+    console.log(`Playing sound [${currentSoundIndex + 1}/${soundFiles.length}]: ${nextSound}`);
     currentSoundIndex = (currentSoundIndex + 1) % soundFiles.length;
 
     // Only update src if it's different or if we want to restart
@@ -99,9 +102,9 @@ async function initializeMediaPipe() {
       },
       runningMode,
       numHands: 2,
-      minHandDetectionConfidence: 0.5, // Increased for better stability
-      minHandPresenceConfidence: 0.5,
-      minTrackingConfidence: 0.5
+      minHandDetectionConfidence: 0.4, 
+      minHandPresenceConfidence: 0.4,
+      minTrackingConfidence: 0.4
     });
 
     console.log('MediaPipe initialized successfully.');
@@ -184,14 +187,12 @@ function predictWebcam() {
         canvasCtx.strokeStyle = '#00FF00';
         canvasCtx.lineWidth = 2;
         const mouthWidth = Math.abs(mouthRight.x - mouthLeft.x);
-        const marginX = mouthWidth * 0.1; 
+        const marginX = mouthWidth * 0.15; // Tightened margin for cheeks
         const minX = Math.min(mouthLeft.x, mouthRight.x) - marginX;
         const maxX = Math.max(mouthLeft.x, mouthRight.x) + marginX;
         
-        // Define a strict vertical range for the mouth: 
-        // starting from slightly above the upper lip (philtrum/2) 
-        // to slightly below the bottom lip.
-        const upperYBound = (philtrum.y + mouthTop.y) / 2;
+        // Define a tighter vertical range: strictly mouth area
+        const upperYBound = mouthTop.y; 
         const lowerYBound = mouthBottom.y + (mouthBottom.y - mouthTop.y) * 0.3;
 
         // Draw the target box
@@ -214,23 +215,22 @@ function predictWebcam() {
               const distSq = dx * dx + dy * dy;
 
               // Tighter distance threshold
-              if (distSq < 0.004) {
-                // 1. Strict horizontal alignment with the mouth
+              if (distSq < 0.006) {
+                // 1. Horizontal alignment with the mouth area
                 const withinX = tip.x >= minX && tip.x <= maxX;
                 
-                // 2. Strict vertical alignment: Must be BELOW the philtrum and ABOVE the chin area
+                // 2. Vertical alignment
                 const withinY = tip.y > upperYBound && tip.y < lowerYBound;
 
-                // 3. EXCLUSION: If the finger is closer to the nose tip than to the mouth, IGNORE it.
-                // This is crucial for nose-scratching cases.
+                // 3. EXCLUSION: Ignore if it's closer to the nose than the mouth
                 const distToNoseSq = Math.pow(tip.x - noseTip.x, 2) + Math.pow(tip.y - noseTip.y, 2);
-                const closerToNoseThanMouth = distToNoseSq < distSq;
+                const clearlyCloserToNose = distToNoseSq < distSq * 1.0;
 
-                // 4. DEPTH: Finger must be very close to the face surface (not just passing in front)
+                // 4. DEPTH: Tight depth match
                 const dz = Math.abs(tip.z - mouthLandmark.z);
-                const depthMatch = dz < 0.035; 
+                const depthMatch = dz < 0.038; 
 
-                if (withinX && withinY && !closerToNoseThanMouth && depthMatch) {
+                if (withinX && withinY && !clearlyCloserToNose && depthMatch) {
                   closeToMouth = true;
                   break;
                 }
@@ -241,33 +241,43 @@ function predictWebcam() {
 
           if (closeToMouth) {
             const now = Date.now();
+            lastProximityTime = now;
 
             // Start timer if first time close
             if (proximityStartTime === null) {
               proximityStartTime = now;
             }
 
-            // Check if 1 second has passed
+            // Check if required duration has passed
             if (now - proximityStartTime >= PROXIMITY_REQUIRED_DURATION) {
               if (now - lastScreamTime > SCREAM_COOLDOWN) {
-                console.log('Mouth and hand proximity sustained for 1s! Screaming...');
+                console.log('Mouth and hand proximity sustained! Screaming...');
                 scream();
                 lastScreamTime = now;
-                // Reset timer after scream so it doesn't scream continuously without re-approaching
+                // Reset timer after scream
                 proximityStartTime = null;
               }
             }
           } else {
-            // Reset timer if hand moved away
-            proximityStartTime = null;
+            // Only reset if proximity has been lost for more than the grace period
+            const now = Date.now();
+            if (proximityStartTime !== null && (now - lastProximityTime > PROXIMITY_GRACE_PERIOD)) {
+              proximityStartTime = null;
+            }
           }
         } else {
-          // Reset timer if no hands detected
-          proximityStartTime = null;
+          // No hands detected: use grace period before resetting
+          const now = Date.now();
+          if (proximityStartTime !== null && (now - lastProximityTime > PROXIMITY_GRACE_PERIOD)) {
+            proximityStartTime = null;
+          }
         }
       } else {
-        // Reset timer if no face detected
-        proximityStartTime = null;
+        // No face detected: use grace period before resetting
+        const now = Date.now();
+        if (proximityStartTime !== null && (now - lastProximityTime > PROXIMITY_GRACE_PERIOD)) {
+          proximityStartTime = null;
+        }
       }
     } catch (err) {
       console.error('Detection error:', err);

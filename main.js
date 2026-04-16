@@ -9,7 +9,7 @@ const __dirname = path.dirname(__filename);
 const store = new Store();
 let mainWindow;
 let tray;
-let soundFiles = store.get('soundFiles', []);
+let soundFiles = store.get('soundFiles', []).sort();
 app.isQuitting = false;
 
 function updateMenu() {
@@ -40,7 +40,7 @@ function updateMenu() {
               filters: [{ name: 'Audio', extensions: ['mp3', 'wav', 'ogg', 'm4a'] }]
             });
             if (!result.canceled && result.filePaths.length > 0) {
-              soundFiles = [...soundFiles, ...result.filePaths];
+              soundFiles = [...soundFiles, ...result.filePaths].sort();
               store.set('soundFiles', soundFiles);
               updateMenu();
               if (mainWindow) mainWindow.webContents.send('update-sounds', soundFiles);
@@ -98,7 +98,7 @@ ipcMain.on('request-add-sounds', async () => {
     filters: [{ name: 'Audio', extensions: ['mp3', 'wav', 'ogg', 'm4a'] }]
   });
   if (!result.canceled && result.filePaths.length > 0) {
-    soundFiles = [...soundFiles, ...result.filePaths];
+    soundFiles = [...soundFiles, ...result.filePaths].sort();
     store.set('soundFiles', soundFiles);
     updateMenu();
     if (mainWindow) mainWindow.webContents.send('update-sounds', soundFiles);
